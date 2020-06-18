@@ -5,7 +5,7 @@ from torch_geometric.data import GraphSAINTRandomWalkSampler, \
     NeighborSampler, GraphSAINTNodeSampler, GraphSAINTEdgeSampler
 from sampler import GraphSAINTNodeSampler, GraphSAINTEdgeSampler, MySAINTSampler
 import torch.nn as nn
-from metric_and_loss import NormCrossEntropyLoss, NormBCEWithLogitsLoss
+from metric_and_loss import NormCrossEntropyLoss, NormBCEWithLogitsLoss, BCEWithLogitsLoss, CrossEntropyLoss
 from torch_geometric.utils import to_dense_adj, dense_to_sparse
 from torch_geometric.data import Data
 from torch_sparse import SparseTensor
@@ -49,12 +49,12 @@ def build_loss_op(args):
         if args.loss_norm == 1:
             return NormCrossEntropyLoss()
         else:
-            return nn.CrossEntropyLoss(reduction='none')
+            return CrossEntropyLoss()
     else:
         if args.loss_norm == 1:
             return NormBCEWithLogitsLoss()
         else:
-            return nn.BCEWithLogitsLoss(reduction='none')
+            return BCEWithLogitsLoss()
 
 
 def build_sampler(args, data, save_dir):

@@ -6,9 +6,10 @@ from torch_geometric.nn import SAGEConv, GATConv, GraphConv
 
 class Filter(nn.Module):
 
-    def __init__(self, in_channels, hidden_channels, out_channels=1, gcn='sage'):
+    def __init__(self, in_channels, hidden_channels, out_channels=1, gcn='sage',drop_out=0.2):
         super(Filter, self).__init__()
         self.in_channels = in_channels
+        self.drop_out = drop_out
         self.lin = torch.nn.Linear(hidden_channels*2 , out_channels)
         self.conv1 = {'sage': SAGEConv, 'gat':GATConv, 'graph':GraphConv}.get(gcn)(self.in_channels, hidden_channels)
         self.conv2 = {'sage': SAGEConv, 'gat':GATConv, 'graph':GraphConv}.get(gcn)(hidden_channels, hidden_channels)
@@ -16,9 +17,9 @@ class Filter(nn.Module):
 
     def forward(self, x, edge_index, edge_weight=None):
         x1 = F.relu(self.conv1(x, edge_index, edge_weight))
-        x1 = F.dropout(x1, p=0.1, training=self.training)
+        x1 = F.dropout(x1, p=self.drop_out, training=self.training)
         x2 = F.relu(self.conv2(x1, edge_index, edge_weight))
-        x2 = F.dropout(x2, p=0.1, training=self.training)
+        x2 = F.dropout(x2, p=self.drop_out, training=self.training)
         x = torch.cat([x1,x2], dim=-1)
         x = self.lin(x)
         return torch.sigmoid(x)
