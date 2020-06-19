@@ -22,7 +22,7 @@ torch.manual_seed(2020)
 
 def train_sample(norm_loss, loss_op, use_meta_sampler):
     model.train()
-    model.set_aggr('mean')
+    model.set_aggr('add')
     meta_sampler.eval()
     total_loss = total_examples = 0
     for data in loader:
@@ -62,7 +62,7 @@ def train_sample(norm_loss, loss_op, use_meta_sampler):
 
 def train_full(loss_op):
     model.train()
-    model.set_aggr('mean')
+    model.set_aggr('add')
 
     optimizer.zero_grad()
     out = model(data.x.to(device), data.edge_index.to(device))
@@ -77,7 +77,7 @@ def train_full(loss_op):
 @torch.no_grad()
 def eval_full():
     model.eval()
-    model.set_aggr('mean')
+    model.set_aggr('add')
 
     out = model(data.x.to(device), data.edge_index.to(device))
     out = out.log_softmax(dim=-1)
@@ -94,7 +94,7 @@ def eval_full():
 @torch.no_grad()
 def eval_full_multi():
     model.eval()
-    model.set_aggr('mean')
+    model.set_aggr('add')
     out = model(data.x.to(device), data.edge_index.to(device))
     out = (out > 0).float().cpu().numpy()
     accs = []
@@ -106,7 +106,7 @@ def eval_full_multi():
 
 def eval_sample(norm_loss, use_meta_sampler):
     model.eval()
-    model.set_aggr('mean')
+    model.set_aggr('add')
     meta_sampler.train()
     res_df_list = []
     for data in loader:
@@ -131,15 +131,15 @@ def eval_sample(norm_loss, use_meta_sampler):
 
             prob = out.softmax(dim=-1)
             loss = loss_op(out, data)
-        # mask = data.train_mask + data.val_mask
-        mask = data.val_mask
+        mask = data.train_mask + data.val_mask
+        # mask = data.val_mask 
 
         buffer.update_best_valid_loss(data.n_id[mask], loss[mask])
         buffer.update_prob_each_class(data.n_id[mask], prob[mask])
 
         if use_meta_sampler:
             # meta_loss = torch.mean(meta_prob[new_indices][mask].squeeze() * loss[mask].squeeze() - torch.log(meta_prob[new_indices][mask])) + 0.1 * meta_prob[new_indices].mean()
-            meta_loss = torch.mean(meta_prob[new_indices][mask].squeeze()) - 0.5 * meta_prob[new_indices].mean()
+            meta_loss = torch.mean(meta_prob[new_indices][mask].squeeze()) + 0.1 * meta_prob[new_indices].mean()
             meta_loss.backward()
             meta_optimizer.step()
 
