@@ -1,7 +1,7 @@
 from parse_args import parse_args, get_log_name
 import torch
-from torch.distributions.bernoulli import Bernoulli
 from torch_geometric.utils import degree
+from torch.distributions.bernoulli import Bernoulli
 import numpy as np
 from nets import SAGENet, GATNet
 
@@ -11,7 +11,7 @@ from utils import load_dataset, build_loss_op, build_sampler
 import pandas as pd
 from time import time
 from metanet import Filter, Buffer
-from utils import filter_
+from utils import filter_, calc_avg_loss
 # from metric_and_loss import MetaLoss
 
 
@@ -20,24 +20,29 @@ summary_path = './summary'
 torch.manual_seed(2020)
 
 
-def train_sample(norm_loss, loss_op, use_meta_sampler):
+def train_sample(norm_loss, meta_sampler_type='prob'):
     model.train()
     model.set_aggr('add')
     meta_sampler.eval()
     total_loss = total_examples = 0
     for data in loader:
-        if use_meta_sampler:
-############# Meta Sampler section ################
-            with torch.no_grad():
-                x = buffer.get_x(data.n_id).to(device)
-                prob = meta_sampler(x, data.edge_index.to(device))
-                # new_indices = (prob.squeeze() > 0.5).nonzero()
-                new_indices = Bernoulli(prob.squeeze()).sample().nonzero()
-                new_indices = new_indices.cpu().squeeze()
-                data = filter_(data, new_indices.long())
-############# End ###################################
         optimizer.zero_grad()
         data = data.to(device)
+############# Meta Sampler section ################
+        with torch.no_grad():
+            x = buffer.get_x_rank(data.n_id).to(device)
+            meta_prob = meta_sampler(x, data.edge_index)
+            if meta_sampler_type=='normalized':
+                meta_prob = meta_prob / meta_prob.mean()
+            if meta_sampler_type=='hard':
+                meta_prob = torch.where(meta_prob>0.5,torch.full_like(meta_prob,1),torch.full_like(meta_prob,0))
+            if meta_sampler_type=='bernouli':
+                sample_indices = Bernoulli(meta_prob.squeeze()).sample().resize(meta_prob.size()[0],1)
+                meta_prob = torch.where(sample_indices!=0, torch.full_like(meta_prob,1), torch.full_like(meta_prob,0))
+            if meta_sampler_type=='none':
+                meta_prob = torch.full_like(meta_prob, 1) 
+            data.x = meta_prob * data.x
+############# End ###################################
         if norm_loss == 1:
             out = model(data.x, data.edge_index, data.edge_norm * data.edge_attr)
 
@@ -46,23 +51,23 @@ def train_sample(norm_loss, loss_op, use_meta_sampler):
 
 ############## Meta Sampler Section ###################
         loss = loss_op(out, data)
+        avg_loss = calc_avg_loss(loss)
         prob = out.softmax(dim=-1)
-        buffer.update_prob_each_class(data.n_id[data.train_mask], prob[data.train_mask])
-        buffer.update_avg_train_loss(data.n_id[data.train_mask], loss[data.train_mask])
+        mask = data.train_mask[data.res_n_id]
+        buffer.update_avg_train_loss(data.n_id[data.res_n_id][mask].cpu(), avg_loss[data.res_n_id][mask].detach().cpu())
 ##########################################################
-        loss = loss[data.train_mask].mean()
+        loss = loss[data.res_n_id][mask].mean()
         
         loss.backward()
         optimizer.step()
-        total_loss += loss.item() * data.train_mask.sum()
-        total_examples += data.train_mask.sum()
-    #print(data.n_id)
+        total_loss += loss.item() * mask.sum()
+        total_examples += mask.sum()
     return total_loss / total_examples
 
 
-def train_full(loss_op):
+def train_full():
     model.train()
-    model.set_aggr('add')
+    model.set_aggr('mean')
 
     optimizer.zero_grad()
     out = model(data.x.to(device), data.edge_index.to(device))
@@ -77,7 +82,7 @@ def train_full(loss_op):
 @torch.no_grad()
 def eval_full():
     model.eval()
-    model.set_aggr('add')
+    model.set_aggr('mean')
 
     out = model(data.x.to(device), data.edge_index.to(device))
     out = out.log_softmax(dim=-1)
@@ -94,7 +99,7 @@ def eval_full():
 @torch.no_grad()
 def eval_full_multi():
     model.eval()
-    model.set_aggr('add')
+    model.set_aggr('mean')
     out = model(data.x.to(device), data.edge_index.to(device))
     out = (out > 0).float().cpu().numpy()
     accs = []
@@ -104,65 +109,59 @@ def eval_full_multi():
     return accs
 
 
-def eval_sample(norm_loss, use_meta_sampler):
+def eval_sample(norm_loss, meta_sampler_type='prob'):
     model.eval()
     model.set_aggr('add')
     meta_sampler.train()
     res_df_list = []
     for data in loader:
 ###########################Meta################
-        if use_meta_sampler:
-            x = buffer.get_x(data.n_id).detach().to(device)
-
-            meta_sampler.zero_grad()
-            meta_prob = meta_sampler(x, data.edge_index.to(device))
-            # new_indices = (meta_prob.cpu().squeeze() > 0.5).nonzero()
-            new_indices = Bernoulli(meta_prob.cpu().squeeze()).sample().nonzero()
-            new_indices = new_indices.squeeze()
-
-            data = filter_(data, new_indices)
-###############################################
+        meta_optimizer.zero_grad()
+        x = buffer.get_x_rank(data.n_id).to(device)
         data = data.to(device)
-        with torch.no_grad():
-            if norm_loss == 1:
-                out = model(data.x, data.edge_index, data.edge_norm * data.edge_attr)
-            else:
-                out = model(data.x, data.edge_index)
+        meta_prob = meta_sampler(x, data.edge_index)
+        if meta_sampler_type=='normalized':
+            meta_prob = meta_prob / meta_prob.mean()
+        if meta_sampler_type=='hard':
+            meta_prob = torch.where(meta_prob>0.5,torch.full_like(meta_prob,1),torch.full_like(meta_prob,0))
+        if meta_sampler_type=='bernouli':
+            sample_indices = Bernoulli(meta_prob.squeeze()).sample().resize(meta_prob.size()[0],1)
+            meta_prob = torch.where(sample_indices!=0, torch.full_like(meta_prob,1), torch.full_like(meta_prob,0))
+        if meta_sampler_type=='none':
+            meta_prob = torch.full_like(meta_prob, 1) 
+        data.x = meta_prob * data.x
+###############################################
+        if norm_loss == 1:
+            out = model(data.x, data.edge_index, data.edge_norm * data.edge_attr)
+        else:
+            out = model(data.x, data.edge_index)
+        prob = out.softmax(dim=-1)
+        loss = loss_op(out, data)
+        
+        # use validation res_n_id set as backward 
+        mask = data.val_mask[data.res_n_id]
 
-            prob = out.softmax(dim=-1)
-            loss = loss_op(out, data)
-        mask = data.train_mask + data.val_mask
-        # mask = data.val_mask 
+        buffer.update_best_valid_loss(data.n_id[data.res_n_id][mask].cpu(), loss[data.res_n_id][mask].detach().cpu())
+        buffer.update_prob_each_class(data.n_id[data.res_n_id][mask].cpu(), prob[data.res_n_id][mask].detach().cpu())
 
-        buffer.update_best_valid_loss(data.n_id[mask], loss[mask])
-        buffer.update_prob_each_class(data.n_id[mask], prob[mask])
 
-        if use_meta_sampler:
-            # meta_loss = torch.mean(meta_prob[new_indices][mask].squeeze() * loss[mask].squeeze() - torch.log(meta_prob[new_indices][mask])) + 0.1 * meta_prob[new_indices].mean()
-            meta_loss = torch.mean(meta_prob[new_indices][mask].squeeze()) + 0.1 * meta_prob[new_indices].mean()
-            meta_loss.backward()
+        loss = loss[data.res_n_id][mask].mean()
+
+        if meta_sampler_type!='none':
+            loss.backward()
             meta_optimizer.step()
 
         out = out.log_softmax(dim=-1)
         pred = out.argmax(dim=-1)
 
-
         res_batch = pd.DataFrame()
-        res_batch['nid'] = data.indices.cpu().numpy()
-        res_batch['pred'] = pred.cpu().numpy()
+        res_batch['nid'] = data.n_id[data.res_n_id].cpu()
+        res_batch['pred'] = pred[data.res_n_id].cpu().numpy()
         res_df_list.append(res_batch)
-    res_df_duplicate = pd.concat(res_df_list)
-    start_time = time()
-    tmp = res_df_duplicate.groupby(['nid', 'pred']).size().unstack().fillna(0)
-    res_df = pd.DataFrame()
-    res_df['nid'] = tmp.index
-    res_df['pred'] = tmp.values.argmax(axis=1)
-    # res_df = res_df.groupby('nid')['pred'].apply(lambda x: np.argmax(np.bincount(x))).reset_index()  # 10s
 
-    res_df.columns = ['nid', 'pred']
+    res_df = pd.concat(res_df_list).sort_values('nid')
     res_df = res_df.merge(node_df, on=['nid'], how='left')
-
-    accs = res_df.groupby(['mask']).apply(lambda x: f1_score(x['y'], x['pred'],average='micro')).reset_index()
+    accs = res_df.groupby(['mask']).apply(lambda x: f1_score(x['y'], x['pred'], average='micro')).reset_index()
     accs.columns = ['mask', 'acc']
     accs = accs.sort_values(by=['mask'], ascending=True)
     accs = accs['acc'].values
@@ -170,8 +169,69 @@ def eval_sample(norm_loss, use_meta_sampler):
     return accs
 
 
-def eval_sample_multi(norm_loss,use_meta_sampler):
-    pass
+def eval_sample_multi(norm_loss, meta_sampler_type='prob'):
+    model.eval()
+    model.set_aggr('add')
+
+    pred_train_list, label_train_list = [],[]
+    pred_val_list, label_val_list = [],[]
+    pred_test_list, label_test_list = [],[]
+    for data in loader:
+###########################Meta################
+        meta_optimizer.zero_grad()
+        x = buffer.get_x_rank(data.n_id).to(device)
+        data = data.to(device)
+        meta_prob = meta_sampler(x, data.edge_index)
+        if meta_sampler_type=='normalized':
+            meta_prob = meta_prob / meta_prob.mean()
+        if meta_sampler_type=='hard':
+            meta_prob = torch.where(meta_prob>0.5,torch.full_like(meta_prob,1),torch.full_like(meta_prob,0))
+        if meta_sampler_type=='bernouli':
+            sample_indices = Bernoulli(meta_prob.squeeze()).sample().resize(meta_prob.size()[0],1)
+            meta_prob = torch.where(sample_indices!=0, torch.full_like(meta_prob,1), torch.full_like(meta_prob,0))
+        if meta_sampler_type=='none':
+            meta_prob = torch.full_like(meta_prob, 1) 
+        data.x = meta_prob * data.x
+###############################################
+        if norm_loss == 1:
+            out = model(data.x, data.edge_index, data.edge_norm * data.edge_attr)
+        else:
+            out = model(data.x, data.edge_index)
+        prob = F.sigmoid(out)
+        loss = loss_op(out, data)
+        
+        # use validation res_n_id set as backward 
+        mask = data.val_mask[data.res_n_id]
+
+        buffer.update_best_valid_loss(data.n_id[data.res_n_id][mask].cpu(), loss[data.res_n_id][mask].detach().cpu())
+        buffer.update_prob_each_class(data.n_id[data.res_n_id][mask].cpu(), prob[data.res_n_id][mask].detach().cpu())
+
+
+        loss = loss[data.res_n_id][mask].mean()
+
+        if meta_sampler_type!='none':
+            loss.backward()
+            meta_optimizer.step()
+
+        pred = (prob > 0.5).detach().cpu().numpy()
+
+        train_mask = data.train_mask[data.res_n_id]
+        pred_train_list.extend(pred[data.res_n_id][train_mask].astype(int).tolist())
+        label_train_list.extend(data.y[data.res_n_id][train_mask].cpu().astype(int).tolist())
+
+        val_mask = data.val_mask[data.res_n_id]
+        pred_val_list.extend(pred[data.res_n_id][val_mask].astype(int).tolist())
+        label_val_list.extend(data.y[data.res_n_id][val_mask].cpu().astype(int).tolist())
+
+        test_mask = data.train_mask[data.res_n_id]
+        pred_test_list.extend(pred[data.res_n_id][test_mask].astype(int).tolist())
+        label_test_list.extend(data.y[data.res_n_id][test_mask].cpu().astype(int).tolist())
+
+    accs = []
+    accs.append(f1_score(np.array(label_train_list), np.array(pred_train_list), average='micro'))
+    accs.append(f1_score(np.array(label_val_list), np.array(pred_val_list), average='micro'))
+    accs.append(f1_score(np.array(label_test_list), np.array(pred_test_list), average='micro'))
+    return accs
 
 
 def func(x):
@@ -205,12 +265,13 @@ if __name__ == '__main__':
         is_multi = True
 
     data = dataset[0]
+    print(data.train_mask.sum(),data.val_mask.sum(),data.test_mask.sum())
     row, col = data.edge_index
     data.edge_attr = 1. / degree(col, data.num_nodes)[col]  # Norm by in-degree.
     data.indices = torch.arange(0, data.num_nodes)
     data.n_id = data.indices
     data.y = data.y.long()
-
+    #print(data.y.size(), 'ys', data.num_nodes, dataset.num_classes)
 
 
 
@@ -224,6 +285,11 @@ if __name__ == '__main__':
         test_nid = data.indices[data.test_mask].numpy()
         val_nid = data.indices[data.val_mask].numpy()
         node_df['mask'] = node_df['nid'].apply(lambda x: func(x))
+    else:
+        train_nid = data.indices[data.train_mask].numpy()
+        test_nid = data.indices[data.test_mask].numpy()
+        val_nid = data.indices[data.val_mask].numpy()
+        label_matrix = data.y.numpy()
 
     loader, msg = build_sampler(args, data, dataset.processed_dir)
     logger.info(msg)
@@ -244,7 +310,7 @@ if __name__ == '__main__':
     model = Net(in_channels=dataset.num_node_features,
                 hidden_channels=256,
                 out_channels=dataset.num_classes, drop_out=args.drop_out).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     loss_op = build_loss_op(args)
 
 
@@ -252,25 +318,26 @@ if __name__ == '__main__':
     meta_sampler = Filter(in_channels=dataset.num_classes+2,
                           hidden_channels=16,
                           out_channels=1, drop_out=args.meta_drop_out).to(device)
-    meta_optimizer = torch.optim.Adam(meta_sampler.parameters(), lr=0.0001)
+    meta_optimizer = torch.optim.Adam(meta_sampler.parameters(), lr=args.meta_learning_rate)
 
     #Buffer
     buffer = Buffer(num_nodes=data.num_nodes,
-                          num_classes=dataset.num_classes).to(device)
+                          num_classes=dataset.num_classes,
+                    y=data.y)
     # todo replace by tensorboard
     summary_accs_train = []
     summary_accs_test = []
 
     for epoch in range(1, args.epochs + 1):
         if args.train_sample == 1:
-            loss = train_sample(norm_loss=args.loss_norm, loss_op=loss_op, use_meta_sampler=args.use_meta_sampler)
+            loss = train_sample(norm_loss=args.loss_norm, meta_sampler_type=args.meta_sampler_type)
         else:
             loss = train_full(loss_op=loss_op)
         if args.eval_sample == 1:
             if is_multi:
-                accs = eval_sample_multi(norm_loss=args.loss_norm, use_meta_sampler=args.use_meta_sampler)
+                accs = eval_sample_multi(norm_loss=args.loss_norm, meta_sampler_type=args.meta_sampler_type)
             else:
-                accs = eval_sample(norm_loss=args.loss_norm, use_meta_sampler=args.use_meta_sampler)
+                accs = eval_sample(norm_loss=args.loss_norm, meta_sampler_type=args.meta_sampler_type)
         else:
             if is_multi:
                 accs = eval_full_multi()

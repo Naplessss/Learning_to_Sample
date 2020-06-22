@@ -8,7 +8,7 @@ class NormCrossEntropyLoss(object):
 
     def __call__(self, out, data):
         loss = self.loss_op(out, data.y.long())
-        loss = (loss * data.node_norm)
+        loss = loss * data.node_norm
         return loss
 
 

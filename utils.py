@@ -5,7 +5,7 @@ from torch_geometric.data import GraphSAINTRandomWalkSampler, \
     NeighborSampler, GraphSAINTNodeSampler, GraphSAINTEdgeSampler
 from sampler import GraphSAINTNodeSampler, GraphSAINTEdgeSampler, MySAINTSampler
 import torch.nn as nn
-from metric_and_loss import NormCrossEntropyLoss, NormBCEWithLogitsLoss, BCEWithLogitsLoss, CrossEntropyLoss
+from metric_and_loss import NormCrossEntropyLoss, NormBCEWithLogitsLoss, CrossEntropyLoss, BCEWithLogitsLoss
 from torch_geometric.utils import to_dense_adj, dense_to_sparse
 from torch_geometric.data import Data
 from torch_sparse import SparseTensor
@@ -115,9 +115,15 @@ def filter_(data, node_idx):
     new_data.edge_index = torch.stack([row, col], dim=0)
     new_data.num_nodes = len(node_idx)
     new_data.edge_attr = value
-    assert(len(new_data.edge_attr) == len(new_data.edge_index[0]))
+    #assert(len(new_data.edge_attr) == len(new_data.edge_index[0]))
     return new_data
 
+def calc_avg_loss(loss):
+    if loss.dim() > 1:
+        new_loss = loss.mean(dim=1, keepdim=False)
+    else:
+        new_loss = loss
+    return new_loss
     # new_edge_index =
     # data_n_id = data.n_id
     # new_x = data.x[new_index]
