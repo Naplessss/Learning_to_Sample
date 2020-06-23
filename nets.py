@@ -162,23 +162,23 @@ class GATNet(nn.Module):
         super(GATNet, self).__init__()
         self.conv1 = NormGATConv(in_channels, hidden_channels)
         self.conv2 = NormGATConv(hidden_channels, hidden_channels)
-        self.conv3 = NormGATConv(hidden_channels, hidden_channels)
-        self.lin = torch.nn.Linear(3 * hidden_channels, out_channels)
+        # self.conv3 = NormGATConv(hidden_channels, hidden_channels)
+        self.lin = torch.nn.Linear(hidden_channels, out_channels)
         self.drop_out = drop_out
 
     def set_aggr(self, aggr):
         self.conv1.aggr = aggr
         self.conv2.aggr = aggr
-        self.conv3.aggr = aggr
+        # self.conv3.aggr = aggr
 
     def forward(self, x0, edge_index, edge_weight=None):
         x1 = F.relu(self.conv1(x0, edge_index, edge_weight))
         x1 = F.dropout(x1, p=self.drop_out, training=self.training)
         x2 = F.relu(self.conv2(x1, edge_index, edge_weight))
         x2 = F.dropout(x2, p=self.drop_out, training=self.training)
-        x3 = F.relu(self.conv3(x2, edge_index, edge_weight))
-        x3 = F.dropout(x3, p=self.drop_out, training=self.training)
-        x = torch.cat([x1, x2, x3], dim=-1)
-        x = self.lin(x)
+        # x3 = F.relu(self.conv3(x2, edge_index, edge_weight))
+        # x3 = F.dropout(x3, p=self.drop_out, training=self.training)
+        # x = torch.cat([x1, x2, x3], dim=-1)
+        x = self.lin(x2)
 
-        return x.log_softmax(dim=-1)
+        return x

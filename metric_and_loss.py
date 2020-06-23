@@ -27,7 +27,7 @@ class CrossEntropyLoss(object):
         self.loss_op = nn.CrossEntropyLoss(reduction='none')
 
     def __call__(self, out, data):
-        loss = self.loss_op(out, data.y.long())
+        loss = self.loss_op(out, data.y.long()) / data.num_nodes
         return loss
 
 class BCEWithLogitsLoss(object):
@@ -35,5 +35,5 @@ class BCEWithLogitsLoss(object):
         self.loss_op = nn.BCEWithLogitsLoss(reduction='none')
 
     def __call__(self, out, data):
-        loss = self.loss_op(out, data.y.type_as(out))
+        loss = self.loss_op(out, data.y.type_as(out)) / data.num_nodes
         return loss

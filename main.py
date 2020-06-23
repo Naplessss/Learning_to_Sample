@@ -36,16 +36,17 @@ def train_sample(norm_loss, meta_sampler_type='prob'):
                 meta_prob = meta_prob / meta_prob.mean()
             if meta_sampler_type=='hard':
                 meta_prob = torch.where(meta_prob>0.5,torch.full_like(meta_prob,1),torch.full_like(meta_prob,0))
+                meta_prob = meta_prob / meta_prob.mean()
             if meta_sampler_type=='bernouli':
                 sample_indices = Bernoulli(meta_prob.squeeze()).sample().resize(meta_prob.size()[0],1)
                 meta_prob = torch.where(sample_indices!=0, torch.full_like(meta_prob,1), torch.full_like(meta_prob,0))
+                meta_prob = meta_prob / meta_prob.mean()
             if meta_sampler_type=='none':
                 meta_prob = torch.full_like(meta_prob, 1) 
             data.x = meta_prob * data.x
 ############# End ###################################
         if norm_loss == 1:
             out = model(data.x, data.edge_index, data.edge_norm * data.edge_attr)
-
         else:
             out = model(data.x, data.edge_index)
 
@@ -56,7 +57,7 @@ def train_sample(norm_loss, meta_sampler_type='prob'):
         mask = data.train_mask[data.res_n_id]
         buffer.update_avg_train_loss(data.n_id[data.res_n_id][mask].cpu(), avg_loss[data.res_n_id][mask].detach().cpu())
 ##########################################################
-        loss = loss[data.res_n_id][mask].mean()
+        loss = loss[data.res_n_id][mask].sum()
         
         loss.backward()
         optimizer.step()
@@ -85,13 +86,12 @@ def eval_full():
     model.set_aggr('mean')
 
     out = model(data.x.to(device), data.edge_index.to(device))
-    out = out.log_softmax(dim=-1)
-    pred = out.argmax(dim=-1)
-    correct = pred.eq(data.y.to(device))
+    out = out.log_softmax(dim=-1).squeeze().detach().cpu()
+    pred = out.argmax(dim=-1).squeeze().detach().cpu()
 
     accs = []
     for _, mask in data('train_mask', 'val_mask', 'test_mask'):
-        accs.append(correct[mask].sum().item() / mask.sum().item())
+        accs.append(f1_score(data.y[mask],pred[mask],average='micro'))
 
     return accs
 
@@ -123,10 +123,12 @@ def eval_sample(norm_loss, meta_sampler_type='prob'):
         if meta_sampler_type=='normalized':
             meta_prob = meta_prob / meta_prob.mean()
         if meta_sampler_type=='hard':
-            meta_prob = torch.where(meta_prob>0.5,torch.full_like(meta_prob,1),torch.full_like(meta_prob,0))
+            meta_prob = torch.where(meta_prob>0.5, torch.full_like(meta_prob,1), torch.full_like(meta_prob,0))
+            meta_prob = meta_prob / meta_prob.mean()
         if meta_sampler_type=='bernouli':
             sample_indices = Bernoulli(meta_prob.squeeze()).sample().resize(meta_prob.size()[0],1)
             meta_prob = torch.where(sample_indices!=0, torch.full_like(meta_prob,1), torch.full_like(meta_prob,0))
+            meta_prob = meta_prob / meta_prob.mean()
         if meta_sampler_type=='none':
             meta_prob = torch.full_like(meta_prob, 1) 
         data.x = meta_prob * data.x
@@ -145,7 +147,7 @@ def eval_sample(norm_loss, meta_sampler_type='prob'):
         buffer.update_prob_each_class(data.n_id[data.res_n_id][mask].cpu(), prob[data.res_n_id][mask].detach().cpu())
 
 
-        loss = loss[data.res_n_id][mask].mean()
+        loss = loss[data.res_n_id][mask].sum()
 
         if meta_sampler_type!='none':
             loss.backward()
@@ -172,7 +174,6 @@ def eval_sample(norm_loss, meta_sampler_type='prob'):
 def eval_sample_multi(norm_loss, meta_sampler_type='prob'):
     model.eval()
     model.set_aggr('add')
-
     pred_train_list, label_train_list = [],[]
     pred_val_list, label_val_list = [],[]
     pred_test_list, label_test_list = [],[]
@@ -185,10 +186,12 @@ def eval_sample_multi(norm_loss, meta_sampler_type='prob'):
         if meta_sampler_type=='normalized':
             meta_prob = meta_prob / meta_prob.mean()
         if meta_sampler_type=='hard':
-            meta_prob = torch.where(meta_prob>0.5,torch.full_like(meta_prob,1),torch.full_like(meta_prob,0))
+            meta_prob = torch.where(meta_prob>0.5, torch.full_like(meta_prob,1), torch.full_like(meta_prob,0))
+            meta_prob = meta_prob / meta_prob.mean()
         if meta_sampler_type=='bernouli':
             sample_indices = Bernoulli(meta_prob.squeeze()).sample().resize(meta_prob.size()[0],1)
             meta_prob = torch.where(sample_indices!=0, torch.full_like(meta_prob,1), torch.full_like(meta_prob,0))
+            meta_prob = meta_prob / meta_prob.mean()
         if meta_sampler_type=='none':
             meta_prob = torch.full_like(meta_prob, 1) 
         data.x = meta_prob * data.x
@@ -207,7 +210,7 @@ def eval_sample_multi(norm_loss, meta_sampler_type='prob'):
         buffer.update_prob_each_class(data.n_id[data.res_n_id][mask].cpu(), prob[data.res_n_id][mask].detach().cpu())
 
 
-        loss = loss[data.res_n_id][mask].mean()
+        loss = loss[data.res_n_id][mask].sum()
 
         if meta_sampler_type!='none':
             loss.backward()

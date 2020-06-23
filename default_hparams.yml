@@ -1,5 +1,5 @@
 flickr:
-  epochs: 200
+  epochs: 100
   batch_size: 6000
 
   hparams:
